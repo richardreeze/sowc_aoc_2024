@@ -1,6 +1,7 @@
 from fasthtml.common import *
 import httpx
 import os
+from urllib.parse import parse_qs
 
 app, rt = fast_app()
 
@@ -43,9 +44,26 @@ def get_day_completion_times(data, day_num):
     return sorted(completion_times, key=get_duration)
 
 
+def calculate_custom_points(data):
+    custom_points = {}
+    for day_num in range(1, 26):  # Because 25 days of AoC
+        times = get_day_completion_times(data, day_num)
+        n = len(times)
+        for i, entry in enumerate(times):
+            if entry['name'] not in custom_points:
+                custom_points[entry['name']] = 0
+            custom_points[entry[
+                'name']] += n - i  # Custom points based on AoC ranking system (but for SIWC)
+    return custom_points
+
+
 @rt('/')
-def get():
+def get(request):
     data = fetch_leaderboard()
+
+    query_params = parse_qs(request.scope['query_string'].decode())
+    sort_key = query_params.get('sort', ['local'])[0]
+    sort_order = query_params.get('order', ['desc'])[0]
 
     # Get days and sort them
     days = sorted({
@@ -67,6 +85,48 @@ def get():
                           key=lambda x: x['points'],
                           reverse=True)
 
+    custom_points = calculate_custom_points(data)
+
+    # Add custom points to total_points
+    for entry in total_points:
+        entry['custom_points'] = custom_points.get(entry['name'], 0)
+
+    if sort_key == 'local':
+        total_points = sorted(total_points,
+                              key=lambda x: x['points'],
+                              reverse=(sort_order == 'desc'))
+    elif sort_key == 'custom':
+        total_points = sorted(total_points,
+                              key=lambda x: x['custom_points'],
+                              reverse=(sort_order == 'desc'))
+
+    # Toggle sort order depending on next click
+    next_sort_order = 'asc' if sort_order == 'desc' else 'desc'
+    order_arrow = '↓' if sort_order == 'desc' else '↑'
+
+    header_row = Div(Grid(
+        Div("Rank"),
+        Div("Name"),
+        Div(
+            A(f"Local Score {order_arrow if sort_key == 'local' else ''}",
+              href=f"?sort=local&order={next_sort_order}",
+              cls="sortable-header")),
+        Div(
+            A(f"SIWC Score {order_arrow if sort_key == 'custom' else ''}",
+              href=f"?sort=custom&order={next_sort_order}",
+              cls="sortable-header")),
+    ),
+                     cls="leaderboard-row header")
+
+    leaderboard_rows = [
+        Div(Grid(
+            Div(f"#{i+1} {['🥇','🥈','🥉'][i] if i < 3 else ''}",
+                cls=f"rank medal-{i+1}" if i < 3 else "rank"),
+            Div(entry['name']), Div(f"{entry['points']} pts", cls="points"),
+            Div(f"{entry['custom_points']} pts", cls="points")),
+            cls="leaderboard-row") for i, entry in enumerate(total_points)
+    ]
+
     return Titled(
         "AoC 2024 SolveIt Leaderboard",
         Style("""
@@ -78,21 +138,15 @@ def get():
            .medal-2 { color: silver; }
            .medal-3 { color: #cd7f32; }
            .container { max-width: 600px; margin: 0 auto; }
-           .grid { display: grid; grid-template-columns: 0.2fr 1fr 0.3fr; gap: 1rem; }
+           .grid { display: grid; grid-template-columns: 0.2fr 1fr 0.3fr 0.3fr; gap: 1rem; }
+           .sortable-header { cursor: pointer; text-decoration: underline; }
        """),
         Div(
             Div(H3("Select a Day"),
                 Div(*day_links, cls="day-links"),
                 H3("Total Points"),
-                *[
-                    Div(Grid(
-                        Div(f"#{i+1} {['🥇','🥈','🥉'][i] if i < 3 else ''}",
-                            cls=f"rank medal-{i+1}" if i < 3 else "rank"),
-                        Div(entry['name']),
-                        Div(f"{entry['points']} pts", cls="points")),
-                        cls="leaderboard-row")
-                    for i, entry in enumerate(total_points)
-                ],
+                header_row,
+                *leaderboard_rows,
                 cls="container")))
 
 
